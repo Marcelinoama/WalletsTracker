@@ -53,37 +53,6 @@ ADMIN_IDS=123456789,987654321
 - Notifica imediatamente quando threshold é atingido
 - Padrão: 15 segundos de janela, 10 compras para notificar
 
-## 📱 Comandos do Bot
-
-### 👥 Para Todos os Usuários
-
-#### `/help`
-Mostra ajuda completa com todos os comandos disponíveis e explicações sobre o funcionamento do bot.
-
-#### `/grupoid` ou `/id`
-Exibe o ID do grupo atual com instruções de como configurar no arquivo .env. Essencial para configurar grupos de monitoramento e notificação.
-
-### 🔧 Para Administradores
-
-#### `/status`
-Mostra status detalhado do monitor incluindo:
-- Configurações atuais (threshold, janela temporal)
-- Grupos de monitoramento e notificação configurados
-- Contratos ativos sendo monitorados
-- Janelas temporais em andamento com tempo restante
-
-#### `/setthreshold [número]`
-Define quantas compras são necessárias para disparar um alerta.
-- Exemplos: `/setthreshold 5`, `/setthreshold 15`
-- Mínimo: 1 compra
-- Padrão: 10 compras
-
-#### `/setcooldown [segundos]`
-Define a duração da janela de monitoramento temporal.
-- Exemplos: `/setcooldown 10`, `/setcooldown 30`
-- 0 = sem janela (conta imediatamente)
-- Padrão: 15 segundos
-
 ## 🚀 Executando o Bot
 
 ### Manual
@@ -109,15 +78,16 @@ sudo systemctl status wallet-monitor-bot
 sudo journalctl -u wallet-monitor-bot -f
 ```
 
-## 📋 Referência Rápida de Comandos
+## 📱 Comandos Disponíveis
 
-| Comando | Acesso | Descrição |
-|---------|--------|-----------|
-| `/help` | Todos | Ajuda completa do bot |
-| `/grupoid` ou `/id` | Todos | Mostra ID do grupo atual |
-| `/status` | Admin | Status detalhado do monitor |
-| `/setthreshold [número]` | Admin | Define quantas compras para alertar |
-| `/setcooldown [segundos]` | Admin | Define janela temporal de monitoramento |
+### Para Todos os Usuários
+- `/help` - Mostra ajuda e comandos disponíveis
+- `/grupoid` ou `/id` - Mostra ID do grupo atual
+
+### Para Administradores
+- `/status` - Mostra status atual e contratos monitorados
+- `/setthreshold [número]` - Define quantas compras são necessárias para alertar
+- `/setcooldown [segundos]` - Define duração da janela de monitoramento
 
 ## 🔍 Como Funciona
 
@@ -171,11 +141,10 @@ Configuração: Janela de 15s | Threshold: 3 compras
 /setthreshold 15   # Precisa de 15 compras
 ```
 
-### Comandos de Monitoramento
+### Ver Status em Tempo Real
 ```bash
-/status            # Ver configuração atual e contratos ativos
+/status            # Ver configuração atual
 /grupoid           # Ver ID do grupo atual
-/help              # Ver ajuda completa
 ```
 
 ### Configuração de Grupos

@@ -323,7 +323,9 @@ def main():
     app.add_handler(CommandHandler("grupoid", cmd_grupoid))
     app.add_handler(CommandHandler("id", cmd_grupoid))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(error_handler)
+    
+    # Error handler
+    app.add_error_handler(error_handler)
     
     logger.info("Bot iniciado - Monitorando compras...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
