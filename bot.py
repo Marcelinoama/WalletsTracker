@@ -24,18 +24,41 @@ class ContractMonitor:
             'last_seen': datetime.now(), 
             'window_start': None,
             'window_active': False,
-            'window_count': 0
+            'window_count': 0,
+            'buyers': []  # Lista de nomes dos compradores
         })
         self.notified_contracts: Set[str] = set()
         self.group_settings: Dict[int, Dict] = defaultdict(lambda: {'threshold': config.THRESHOLD_COMPRAS, 'enabled': True})
     
     def extract_contract_info(self, text: str) -> tuple:
-        buy_pattern = r'🟢\s*BUY\s+([A-Za-z0-9]+)\s+on\s+([A-Za-z0-9]+)'
+        # Palavras/tokens que devem ser ignorados - mensagens que contêm estes termos não serão processadas
+        ignore_patterns = [
+            r'TROLL',
+            r'HEAVEN',
+            r'🔹🆕🟢',
+            r'TEST',
+            r'TESTE'
+        ]
+        
+        # Verifica se a mensagem contém padrões que devem ser ignorados
+        for ignore_pattern in ignore_patterns:
+            if re.search(ignore_pattern, text, re.IGNORECASE):
+                return None, None, None
+        
+        buy_pattern = r'🟢\s*BUY\s+([A-Za-z0-9\.\_\-]+)\s+on\s+([A-Za-z0-9\.\_\-]+)'
         contract_pattern = r'([A-Za-z0-9]{32,})'
+        # Padrões para extrair nome do comprador
+        buyer_patterns = [
+            r'Nome:\s*([^\n\r]+)',  # Formato: Nome: oryx
+            r'Buyer:\s*([^\n\r]+)', # Formato: Buyer: oryx 
+            r'User:\s*([^\n\r]+)',  # Formato: User: oryx
+            r'👤\s*([^\n\r]+)',     # Formato: 👤 oryx
+            r'Comprador:\s*([^\n\r]+)', # Formato: Comprador: oryx
+        ]
         
         buy_match = re.search(buy_pattern, text, re.IGNORECASE)
         if not buy_match:
-            return None, None
+            return None, None, None
             
         token_name = buy_match.group(1)
         platform = buy_match.group(2)
@@ -43,7 +66,43 @@ class ContractMonitor:
         contract_matches = re.findall(contract_pattern, text)
         contract_address = contract_matches[0] if contract_matches else f"{token_name}_on_{platform}"
         
-        return token_name, contract_address
+        # Extrai nome do comprador - primeiro verifica padrões específicos
+        buyer_name = None
+        for pattern in buyer_patterns:
+            buyer_match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if buyer_match:
+                buyer_name = buyer_match.group(1).strip()
+                break
+        
+        # Se não encontrou padrão específico, procura na linha seguinte ao BUY
+        if not buyer_name:
+            lines = text.split('\n')
+            buy_line_found = False
+            
+            for line in lines:
+                line_stripped = line.strip()
+                
+                # Se encontrou a linha do BUY, marca para pegar a próxima linha válida
+                if re.search(buy_pattern, line, re.IGNORECASE):
+                    buy_line_found = True
+                    continue
+                
+                # Se já passou pela linha do BUY, pega a primeira linha válida como nome do comprador
+                if buy_line_found and line_stripped:
+                    # Verifica se a linha parece ser um nome (não é URL, contrato, etc.)
+                    if (not line_stripped.startswith('http') 
+                        and not re.match(r'^[A-Za-z0-9]{32,}$', line_stripped)  # Não é endereço de contrato
+                        and len(line_stripped) < 50 
+                        and not line_stripped.startswith('🟢')
+                        and not any(char in line_stripped for char in ['$', '%', 'SOL', 'USD'])):  # Não é valor monetário
+                        buyer_name = line_stripped
+                        break
+        
+        # Se ainda não encontrou, usa "Usuário" como padrão
+        if not buyer_name:
+            buyer_name = "Usuário"
+        
+        return token_name, contract_address, buyer_name
     
     def reset_old_counts(self):
         current_time = datetime.now()
@@ -61,6 +120,7 @@ class ContractMonitor:
                     data['window_active'] = False
                     data['window_start'] = None
                     data['window_count'] = 0
+                    # Não limpa a lista de compradores aqui, apenas quando o contrato é removido
         
         # Remove contagens antigas
         contracts_to_remove = []
@@ -72,7 +132,7 @@ class ContractMonitor:
             del self.contract_counts[contract]
             self.notified_contracts.discard(contract)
     
-    def add_purchase(self, contract: str, group_id: int) -> tuple:
+    def add_purchase(self, contract: str, group_id: int, buyer_name: str = None) -> tuple:
         if not self.group_settings[group_id]['enabled']:
             return False, 0, 0, "disabled"
             
@@ -82,6 +142,15 @@ class ContractMonitor:
         data = self.contract_counts[contract]
         threshold = self.group_settings[group_id]['threshold']
         
+        # Adiciona comprador à lista se fornecido (normalizado para evitar duplicatas)
+        if buyer_name:
+            # Normaliza o nome: minúsculas e remove espaços extras
+            normalized_buyer = buyer_name.strip().lower()
+            # Verifica se já existe (comparação case-insensitive)
+            existing_buyers_normalized = [b.strip().lower() for b in data['buyers']]
+            if normalized_buyer not in existing_buyers_normalized:
+                data['buyers'].append(buyer_name.strip())  # Armazena com formatação original mas sem espaços extras
+        
         # Verifica janela ativa
         if data['window_active'] and data['window_start']:
             time_in_window = (current_time - data['window_start']).total_seconds()
@@ -90,8 +159,10 @@ class ContractMonitor:
                 data['window_count'] += 1
                 data['last_seen'] = current_time
                 
+                # Verifica threshold baseado no número de compradores únicos
+                unique_buyers_count = len(data['buyers'])
                 total_compras = data['count'] + data['window_count']
-                if total_compras >= threshold and contract not in self.notified_contracts:
+                if unique_buyers_count >= threshold and contract not in self.notified_contracts:
                     self.notified_contracts.add(contract)
                     return True, total_compras, threshold, "threshold_reached"
                 
@@ -103,7 +174,9 @@ class ContractMonitor:
                 data['count'] = final_count
                 data['last_seen'] = current_time
                 
-                should_notify = (final_count >= threshold and contract not in self.notified_contracts)
+                # Verifica threshold baseado no número de compradores únicos
+                unique_buyers_count = len(data['buyers'])
+                should_notify = (unique_buyers_count >= threshold and contract not in self.notified_contracts)
                 if should_notify:
                     self.notified_contracts.add(contract)
                 
@@ -126,8 +199,10 @@ class ContractMonitor:
             data['window_count'] = 1
             data['last_seen'] = current_time
             
+            # Verifica threshold baseado no número de compradores únicos
+            unique_buyers_count = len(data['buyers'])
             total_compras = data['count'] + data['window_count']
-            if total_compras >= threshold and contract not in self.notified_contracts:
+            if unique_buyers_count >= threshold and contract not in self.notified_contracts:
                 self.notified_contracts.add(contract)
                 return True, total_compras, threshold, "threshold_reached"
             
@@ -148,13 +223,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     group_id = update.effective_chat.id
     
     # Extrai informações do contrato
-    token_name, contract_address = monitor.extract_contract_info(text)
+    token_name, contract_address, buyer_name = monitor.extract_contract_info(text)
     
     if not token_name or not contract_address:
         return
     
     # Adiciona compra e verifica notificação
-    should_notify, count, threshold, window_status = monitor.add_purchase(contract_address, group_id)
+    should_notify, count, threshold, window_status = monitor.add_purchase(contract_address, group_id, buyer_name)
     
     # Se não deve notificar, retorna
     if not should_notify:
@@ -164,8 +239,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Determina onde enviar
         notification_chat_id = config.GRUPO_NOTIFICACAO if config.GRUPO_NOTIFICACAO else group_id
         
+        # Busca a lista de compradores do contrato
+        buyers_list = monitor.contract_counts[contract_address]['buyers']
+        buyers_text = ""
+        if buyers_list:
+            buyers_text = "\n" + "\n".join([f"🔹{buyer}" for buyer in buyers_list]) + "\n"
+        
         notification_text = (
-            f"🚨 **ALERTA DE VOLUME DE COMPRAS** 🚨\n\n"
+            f"🚨 **ALERTA DE VOLUME DE COMPRAS** 🚨{buyers_text}"
             f"**Token:** {token_name}\n"
             f"**Compras detectadas:** {count}\n"
             f"**Threshold atingido:** {threshold}\n"
@@ -203,7 +284,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Notificações: `{grupo_notif}`
 
 ⚙️ **Configurações:**
-• Threshold: {settings['threshold']} compras
+• Threshold: {settings['threshold']} compradores únicos
 • Status: {'✅ Ativo' if settings['enabled'] else '❌ Inativo'}
 • Janela: {config.COOLDOWN_COMPRAS} segundos
 
@@ -247,7 +328,7 @@ async def cmd_setthreshold(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not context.args or len(context.args) != 1:
-        await update.message.reply_text(f"Uso: `/setthreshold [número]`\nAtual: {config.THRESHOLD_COMPRAS}", parse_mode='Markdown')
+        await update.message.reply_text(f"Uso: `/setthreshold [número]`\nAtual: {config.THRESHOLD_COMPRAS} compradores únicos", parse_mode='Markdown')
         return
     
     try:
@@ -258,7 +339,7 @@ async def cmd_setthreshold(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group_id = update.effective_chat.id
         monitor.group_settings[group_id]['threshold'] = new_threshold
         
-        await update.message.reply_text(f"✅ Threshold: **{new_threshold}** compras", parse_mode='Markdown')
+        await update.message.reply_text(f"✅ Threshold: **{new_threshold}** compradores únicos", parse_mode='Markdown')
         
     except ValueError:
         await update.message.reply_text("❌ Número inválido.")
@@ -298,8 +379,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **Funcionamento:**
 • Monitora mensagens "🟢 BUY"
-• Conta compras em janelas temporais
-• Notifica quando atinge threshold
+• Conta compradores únicos por contrato
+• Notifica quando atinge threshold de compradores únicos
 • Reset automático após 1 hora
 """
     
