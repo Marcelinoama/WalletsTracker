@@ -25,7 +25,9 @@ class ContractMonitor:
             'window_start': None,
             'window_active': False,
             'window_count': 0,
-            'buyers': []  # Lista de nomes dos compradores
+            'buyers': [],  # Lista de nomes dos compradores
+            'last_message': '',  # Última mensagem completa capturada
+            'token_info': ''  # Informações extraídas da última mensagem (MC, Seen, etc.)
         })
         self.notified_contracts: Set[str] = set()
         self.group_settings: Dict[int, Dict] = defaultdict(lambda: {'threshold': config.THRESHOLD_COMPRAS, 'enabled': True})
@@ -104,6 +106,44 @@ class ContractMonitor:
         
         return token_name, contract_address, buyer_name
     
+    def extract_token_info(self, text: str) -> str:
+        """Extrai informações detalhadas do token da última mensagem"""
+        info_parts = []
+        
+        # Extrai Market Cap
+        mc_patterns = [
+            r'MC:\s*\$?([\d.,]+[KMB]?)',
+            r'Market\s*Cap:\s*\$?([\d.,]+[KMB]?)',
+            r'\$?([\d.,]+[KMB]?)\s*MC'
+        ]
+        
+        for pattern in mc_patterns:
+            mc_match = re.search(pattern, text, re.IGNORECASE)
+            if mc_match:
+                info_parts.append(f"MC: ${mc_match.group(1)}")
+                break
+        
+        # Extrai Seen time
+        seen_patterns = [
+            r'Seen:\s*([^|]+)',
+            r'Age:\s*([^|]+)',
+            r'(\d+[dhms]\s*\d*[dhms]*)'
+        ]
+        
+        for pattern in seen_patterns:
+            seen_match = re.search(pattern, text, re.IGNORECASE)
+            if seen_match:
+                seen_time = seen_match.group(1).strip()
+                # Remove caracteres especiais
+                seen_time = re.sub(r'[^\w\s\d]', '', seen_time).strip()
+                if seen_time and len(seen_time) < 20:  # Validação básica
+                    info_parts.append(f"Seen: {seen_time}")
+                break
+        
+        # Plataformas removidas conforme solicitado
+        
+        return " | ".join(info_parts) if info_parts else ""
+    
     def reset_old_counts(self):
         current_time = datetime.now()
         cutoff_time = current_time - timedelta(seconds=config.TEMPO_RESET)
@@ -132,7 +172,7 @@ class ContractMonitor:
             del self.contract_counts[contract]
             self.notified_contracts.discard(contract)
     
-    def add_purchase(self, contract: str, group_id: int, buyer_name: str = None) -> tuple:
+    def add_purchase(self, contract: str, group_id: int, buyer_name: str = None, full_message: str = None) -> tuple:
         if not self.group_settings[group_id]['enabled']:
             return False, 0, 0, "disabled"
             
@@ -150,6 +190,11 @@ class ContractMonitor:
             existing_buyers_normalized = [b.strip().lower() for b in data['buyers']]
             if normalized_buyer not in existing_buyers_normalized:
                 data['buyers'].append(buyer_name.strip())  # Armazena com formatação original mas sem espaços extras
+        
+        # SEMPRE atualiza com a última mensagem capturada e extrai informações dela
+        if full_message:
+            data['last_message'] = full_message
+            data['token_info'] = self.extract_token_info(full_message)
         
         # Verifica janela ativa
         if data['window_active'] and data['window_start']:
@@ -228,8 +273,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not token_name or not contract_address:
         return
     
-    # Adiciona compra e verifica notificação
-    should_notify, count, threshold, window_status = monitor.add_purchase(contract_address, group_id, buyer_name)
+    # Adiciona compra e verifica notificação (passando mensagem completa)
+    should_notify, count, threshold, window_status = monitor.add_purchase(contract_address, group_id, buyer_name, text)
     
     # Se não deve notificar, retorna
     if not should_notify:
@@ -245,9 +290,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if buyers_list:
             buyers_text = "\n" + "\n".join([f"🔹{buyer}" for buyer in buyers_list]) + "\n"
         
+        # Busca informações da última mensagem capturada
+        token_info = monitor.contract_counts[contract_address]['token_info']
+        info_text = f"\n📊 {token_info}\n" if token_info else "\n"
+        
         notification_text = (
             f"🚨 **ALERTA DE VOLUME DE COMPRAS** 🚨{buyers_text}"
-            f"**Token:** {token_name}\n"
+            f"**Token:** {token_name}{info_text}"
             f"**Compras detectadas:** {count}\n"
             f"**Threshold atingido:** {threshold}\n"
             f"`{contract_address}`"
